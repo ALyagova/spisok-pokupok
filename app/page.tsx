@@ -9,6 +9,8 @@ type ShoppingList = { id: string; items: ListItem[]; createdAt?: string; complet
 type AppState = { version: 1; categories: Category[]; products: Product[]; active: ShoppingList; template: ShoppingList; history: ShoppingList[]; frequency: Record<string, number> };
 
 const key = "shopping-list-v1";
+const supabaseUrl = "https://kwqvhdhbjjskatmvgoyn.supabase.co";
+const supabaseKey = "sb_publishable_22GfukEaNTQGvqbGryoOXw_JC39rQw5";
 const uid = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
 const categorySeed: [string, string[]][] = [
   ["Молочные продукты", ["Молоко", "Кефир", "Йогурт", "Творог", "Сметана", "Сыр", "Сливочное масло", "Яйца"]],
@@ -54,9 +56,14 @@ export default function Home() {
   const [editing, setEditing] = useState<ListItem | null>(null);
   const [query, setQuery] = useState("");
   const [draft, setDraft] = useState({ name: "", quantity: "", unit: "шт.", note: "" });
+  const [roomId, setRoomId] = useState("");
+  const [remoteReady, setRemoteReady] = useState(false);
 
-  useEffect(() => { try { const saved = localStorage.getItem(key); if (saved) { const restored = JSON.parse(saved) as AppState; restored.products = restored.products.map((product) => product.builtIn ? product : { ...product, name: capitalizeFirst(product.name) }); const customProductIds = new Set(restored.products.filter((product) => !product.builtIn).map((product) => product.id)); const tidy = (list: ShoppingList) => ({ ...list, items: list.items.map((item) => customProductIds.has(item.productId ?? "") ? { ...item, name: capitalizeFirst(item.name) } : item) }); setState({ ...restored, active: tidy(restored.active), template: tidy(restored.template), history: restored.history.map(tidy) }); } } finally { setReady(true); } }, []);
+  useEffect(() => { try { const saved = localStorage.getItem(key); if (saved) { const restored = JSON.parse(saved) as AppState; restored.products = restored.products.map((product) => product.builtIn ? product : { ...product, name: capitalizeFirst(product.name) }); const customProductIds = new Set(restored.products.filter((product) => !product.builtIn).map((product) => product.id)); const tidy = (list: ShoppingList) => ({ ...list, items: list.items.map((item) => customProductIds.has(item.productId ?? "") ? { ...item, name: capitalizeFirst(item.name) } : item) }); setState({ ...restored, active: tidy(restored.active), template: tidy(restored.template), history: restored.history.map(tidy) }); } const url = new URL(window.location.href); const room = url.searchParams.get("room") || uid(); if (!url.searchParams.get("room")) { url.searchParams.set("room", room); window.history.replaceState(null, "", url); } setRoomId(room); } finally { setReady(true); } }, []);
   useEffect(() => { if (ready) localStorage.setItem(key, JSON.stringify(state)); }, [state, ready]);
+  useEffect(() => { if (!roomId) return; const headers = { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}`, "Content-Type": "application/json", "x-family-room": roomId }; const load = async () => { try { const response = await fetch(`${supabaseUrl}/rest/v1/family_lists?room_id=eq.${roomId}&select=state`, { headers }); const rows = await response.json(); if (rows?.[0]?.state) setState(rows[0].state as AppState); setRemoteReady(true); } catch { setRemoteReady(true); } }; load(); }, [roomId]);
+  useEffect(() => { if (!remoteReady || !roomId) return; const timer = window.setTimeout(() => { fetch(`${supabaseUrl}/rest/v1/family_lists?on_conflict=room_id`, { method: "POST", headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}`, "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal", "x-family-room": roomId }, body: JSON.stringify({ room_id: roomId, state, updated_at: new Date().toISOString() }) }).catch(() => undefined); }, 700); return () => window.clearTimeout(timer); }, [state, roomId, remoteReady]);
+  useEffect(() => { if (!remoteReady || !roomId) return; const headers = { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}`, "x-family-room": roomId }; const refresh = async () => { try { const response = await fetch(`${supabaseUrl}/rest/v1/family_lists?room_id=eq.${roomId}&select=state`, { headers }); const rows = await response.json(); if (rows?.[0]?.state) setState(rows[0].state as AppState); } catch { /* local copy stays available offline */ } }; const timer = window.setInterval(refresh, 4000); return () => window.clearInterval(timer); }, [roomId, remoteReady]);
   const list = (tab === "template" || editingTemplate) ? state.template : state.active;
   const category = state.categories.find((item) => item.id === categoryId);
   const updateList = (next: ShoppingList) => setState((s) => editingTemplate ? { ...s, template: next } : { ...s, active: next });
@@ -91,7 +98,7 @@ export default function Home() {
   const openEdit = (item: ListItem) => { setEditing(item); setDraft({ name: item.name, quantity: "", unit: "", note: item.note }); setSheet("item"); };
   const openNewProduct = () => { setDraft({ name: "", quantity: "", unit: "", note: "" }); setSheet("product"); };
   const historyDate = (entry: ShoppingList) => new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long", year: "numeric" }).format(new Date(entry.createdAt ?? entry.completedAt ?? Date.now()));
-  if (!ready) return <main className="app loading">Загружаем ваш список…</main>;
+  if (!ready || !remoteReady) return <main className="app loading">Загружаем семейный список…</main>;
 
   const ListRow = ({ item, store = false }: { item: ListItem; store?: boolean }) => <div className={`item-row ${item.bought ? "bought" : ""}`} onClick={() => store ? updateList({ ...list, items: list.items.map((i) => i.id === item.id ? { ...i, bought: !i.bought } : i) }) : openEdit(item)}>
     {store && <span className="check" aria-hidden="true">{item.bought ? "✓" : ""}</span>}<Thumb label={item.name} categoryId={item.categoryId}/><div className="item-copy"><strong>{item.name}</strong>{displayDetail(item) && <span>{displayDetail(item)}</span>}</div>{!store && <button className="icon-button danger" aria-label={`Удалить ${item.name}`} onClick={(e) => { e.stopPropagation(); removeItem(item); }}>×</button>}</div>;
